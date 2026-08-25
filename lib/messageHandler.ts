@@ -78,8 +78,8 @@ async function handleMessages(sock: any, messageUpdate: any) {
         const chatId = message.key.remoteJid;
         const isGroup = chatId.endsWith('@g.us');
 
-        if (message.message?.protocolMessage?.type === 0) {
-            printLog('info', 'Message deletion detected');
+               if (message.message?.protocolMessage?.type === 2) {
+            printLog('info', 'Message deletion detected via protocol');
             await handleMessageRevocation(sock, message);
             return;
         }
