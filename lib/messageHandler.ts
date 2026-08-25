@@ -674,21 +674,21 @@ async function handleCall(sock: any, calls: any) {
                 printLog('error', `Error handling call from ${callerJid.split('@')[0]}: ${error.message}`);
             }
         }
-    } catch(error: any) {
+       } catch(error: any) {
         printLog('error', `Call handler error: ${error.message}`);
         console.error(error.stack);
     }
 }
-export async function handleMessageUpdates(sock: any, updates: any[]) {
+
+async function handleMessageUpdates(sock: any, updates: any[]) {
     try {
-        const { handleMessageRevocation } = await import('../plugins/antidelete.js');
         for (const update of updates) {
             const isDeletion = 
                 update.update?.message === null || 
                 update.update?.message?.protocolMessage?.type === 2;
             
             if (isDeletion) {
-                printLog('info', `Message deletion detected via update: ${update.key.id}`);
+                printLog('info', `Message deletion detected via update: ${update.key?.id}`);
                 await handleMessageRevocation(sock, update);
             }
         }
@@ -696,6 +696,7 @@ export async function handleMessageUpdates(sock: any, updates: any[]) {
         printLog('error', `Message update handler error: ${err.message}`);
     }
 }
+
 export {
     handleMessages,
     handleGroupParticipantUpdate,
@@ -703,4 +704,3 @@ export {
     handleCall,
     handleMessageUpdates
 };
-
