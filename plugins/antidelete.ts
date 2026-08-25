@@ -18,6 +18,7 @@ const HAS_DB = !!(MONGO_URL || POSTGRES_URL || MYSQL_URL || SQLITE_URL);
 
 // In-memory cache with persistent backup
 let messageStore: Map<string, any> = new Map();
+const recentDeletions = new Set<string>();
 
 // Load persisted store on module init
 try {
@@ -38,6 +39,9 @@ setInterval(() => {
         fs.writeFileSync(STORE_PATH, JSON.stringify(data, null, 2));
     } catch {}
 }, 30000);
+
+// Clear recent deletion IDs every 60 seconds to prevent memory bloat
+setInterval(() => recentDeletions.clear(), 60 * 1000);
 
 if (!fs.existsSync(TEMP_MEDIA_DIR)) {
     fs.mkdirSync(TEMP_MEDIA_DIR, { recursive: true });
@@ -139,7 +143,7 @@ async function downloadMedia(message: any, messageId: string): Promise<{mediaTyp
     if (viewOnceContainer?.imageMessage) {
         mediaType = 'image';
         content = viewOnceContainer.imageMessage.caption || '';
-        const stream = await downloadContentFromMessage(viewOnceContainer.imageMessage, 'image');
+        const stream = await downloadContentFromMessage(viewOnceContainer.imageMessage, 'image' as any);
         let buffer = Buffer.from([]);
         for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
         mediaPath = path.join(TEMP_MEDIA_DIR, `${messageId}.jpg`);
@@ -147,7 +151,7 @@ async function downloadMedia(message: any, messageId: string): Promise<{mediaTyp
     } else if (viewOnceContainer?.videoMessage) {
         mediaType = 'video';
         content = viewOnceContainer.videoMessage.caption || '';
-        const stream = await downloadContentFromMessage(viewOnceContainer.videoMessage, 'video');
+        const stream = await downloadContentFromMessage(viewOnceContainer.videoMessage, 'video' as any);
         let buffer = Buffer.from([]);
         for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
         mediaPath = path.join(TEMP_MEDIA_DIR, `${messageId}.mp4`);
@@ -155,14 +159,14 @@ async function downloadMedia(message: any, messageId: string): Promise<{mediaTyp
     } else if (msg?.imageMessage) {
         mediaType = 'image';
         content = msg.imageMessage.caption || '';
-        const stream = await downloadContentFromMessage(msg.imageMessage, 'image');
+        const stream = await downloadContentFromMessage(msg.imageMessage, 'image' as any);
         let buffer = Buffer.from([]);
         for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
         mediaPath = path.join(TEMP_MEDIA_DIR, `${messageId}.jpg`);
         await writeFile(mediaPath, buffer);
     } else if (msg?.stickerMessage) {
         mediaType = 'sticker';
-        const stream = await downloadContentFromMessage(msg.stickerMessage, 'sticker');
+        const stream = await downloadContentFromMessage(msg.stickerMessage, 'sticker' as any);
         let buffer = Buffer.from([]);
         for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
         mediaPath = path.join(TEMP_MEDIA_DIR, `${messageId}.webp`);
@@ -170,7 +174,7 @@ async function downloadMedia(message: any, messageId: string): Promise<{mediaTyp
     } else if (msg?.videoMessage) {
         mediaType = 'video';
         content = msg.videoMessage.caption || '';
-        const stream = await downloadContentFromMessage(msg.videoMessage, 'video');
+        const stream = await downloadContentFromMessage(msg.videoMessage, 'video' as any);
         let buffer = Buffer.from([]);
         for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
         mediaPath = path.join(TEMP_MEDIA_DIR, `${messageId}.mp4`);
@@ -179,7 +183,7 @@ async function downloadMedia(message: any, messageId: string): Promise<{mediaTyp
         mediaType = 'audio';
         const mime = msg.audioMessage.mimetype || '';
         const ext = mime.includes('ogg') ? 'ogg' : 'mp3';
-        const stream = await downloadContentFromMessage(msg.audioMessage, 'audio');
+        const stream = await downloadContentFromMessage(msg.audioMessage, 'audio' as any);
         let buffer = Buffer.from([]);
         for await (const chunk of stream) buffer = Buffer.concat([buffer, chunk]);
         mediaPath = path.join(TEMP_MEDIA_DIR, `${messageId}.${ext}`);
@@ -194,11 +198,12 @@ export async function storeMessage(sock: any, message: any) {
         const config = await loadAntideleteConfig();
         if (!config.enabled) return;
         if (!message.key?.id) return;
-        if (message.key.fromMe) return; // Don't track bot's own messages
+        if (message.key.fromMe) return;
 
         const messageId = message.key.id;
         const sender = message.key.participant || message.key.remoteJid;
         const isViewOnce = isViewOnceMessage(message);
+        const vOnce = extractViewOnceMessage(message);
         
         const msg = message.message;
         let content = '';
@@ -207,10 +212,10 @@ export async function storeMessage(sock: any, message: any) {
             content = msg.conversation;
         } else if (msg?.extendedTextMessage?.text) {
             content = msg.extendedTextMessage.text;
-        } else if (extractViewOnceMessage(message)?.imageMessage?.caption) {
-            content = extractViewOnceMessage(message).imageMessage.caption;
-        } else if (extractViewOnceMessage(message)?.videoMessage?.caption) {
-            content = extractViewOnceMessage(message).videoMessage.caption;
+        } else if (vOnce?.imageMessage?.caption) {
+            content = vOnce.imageMessage.caption;
+        } else if (vOnce?.videoMessage?.caption) {
+            content = vOnce.videoMessage.caption;
         } else if (msg?.imageMessage?.caption) {
             content = msg.imageMessage.caption;
         } else if (msg?.videoMessage?.caption) {
@@ -238,7 +243,7 @@ export async function storeMessage(sock: any, message: any) {
             timestamp: new Date().toISOString()
         });
 
-        // SILENT VIEWONCE AUTO-FORWARD — no command, no chat reply, just sends to owner
+        // SILENT VIEWONCE AUTO-FORWARD — no command, no chat reply
         if (isViewOnce && mediaType && mediaPath && fs.existsSync(mediaPath)) {
             try {
                 const ownerNumber = getOwnerJid(sock);
@@ -257,7 +262,7 @@ export async function storeMessage(sock: any, message: any) {
                 } else if (mediaType === 'video') {
                     await sock.sendMessage(ownerNumber, { video: { url: mediaPath }, ...mediaOptions });
                 }
-                // Note: mediaPath is NOT deleted here — kept for antidelete if message is later deleted
+                // Media is NOT deleted here — kept for antidelete if message is later deleted
             } catch(e: any) {
                 console.error('ViewOnce forward error:', e.message);
             }
@@ -295,10 +300,13 @@ export async function handleMessageRevocation(sock: any, revocationMessage: any)
             return;
         }
 
+        // Prevent double-reporting the same deletion
+        if (recentDeletions.has(messageId)) return;
+        recentDeletions.add(messageId);
+
         const ownerNumber = getOwnerJid(sock);
         if (!ownerNumber) return;
         
-        // Don't report if bot or owner deleted it
         const botId = sock.user?.id ? sock.user.id.split(':')[0] + '@s.whatsapp.net' : '';
         if (deletedBy?.includes(botId) || deletedBy === ownerNumber) return;
 
