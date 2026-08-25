@@ -680,11 +680,28 @@ async function handleCall(sock: any, calls: any) {
         console.error(error.stack);
     }
 }
-
+export async function handleMessageUpdates(sock: any, updates: any[]) {
+    try {
+        const { handleMessageRevocation } = await import('../plugins/antidelete.js');
+        for (const update of updates) {
+            const isDeletion = 
+                update.update?.message === null || 
+                update.update?.message?.protocolMessage?.type === 2;
+            
+            if (isDeletion) {
+                printLog('info', `Message deletion detected via update: ${update.key.id}`);
+                await handleMessageRevocation(sock, update);
+            }
+        }
+    } catch (err: any) {
+        printLog('error', `Message update handler error: ${err.message}`);
+    }
+}
 export {
     handleMessages,
     handleGroupParticipantUpdate,
     handleStatus,
-    handleCall
+    handleCall,
+    handleMessageUpdates
 };
 
