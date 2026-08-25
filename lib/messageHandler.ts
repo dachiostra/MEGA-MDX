@@ -78,12 +78,11 @@ async function handleMessages(sock: any, messageUpdate: any) {
         const chatId = message.key.remoteJid;
         const isGroup = chatId.endsWith('@g.us');
 
-               if (message.message?.protocolMessage?.type === 2) {
+                      if (message.message?.protocolMessage?.type === 2) {
             printLog('info', 'Message deletion detected via protocol');
             await handleMessageRevocation(sock, message);
             return;
         }
-
         await storeMessage(sock, message);
 
         // Store pushName in contacts for name resolution (store under both lid and real JID)
